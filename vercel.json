@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/pre-verify/([^/]+)",
+      "dest": "/api/verify.py"
+    },
+    {
+      "src": "/pre-verify/([^/]+)/submit",
+      "dest": "/api/verify.py"
+    },
+    {
+      "src": "/api/create-token",
+      "dest": "/api/create_token.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/index.py"
+    }
+  ],
+  "env": {
+    "DB_URI": "@db_uri"
+  }
+}
