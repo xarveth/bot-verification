@@ -1,1 +1,1 @@
-
+# No external dependencies - uses Python stdlib only (hmac, hashlib, base64, json)
