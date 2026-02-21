@@ -20,8 +20,8 @@ def decode_token(token_str):
     if not hmac.compare_digest(sig, expected_sig):
         return None, None, None
 
-    # Decode payload
-    padding = 4 - len(payload_b64) % 4
+    # Decode payload — correct padding: (4 - n%4) % 4 avoids adding 4 chars when already aligned
+    padding = (4 - len(payload_b64) % 4) % 4
     payload_str = base64.urlsafe_b64decode((payload_b64 + '=' * padding).encode()).decode()
     data = json.loads(payload_str)
 
