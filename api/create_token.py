@@ -35,7 +35,7 @@ class handler(BaseHTTPRequestHandler):
                 hashlib.sha256
             ).hexdigest()
 
-            token = f"{payload}.{sig}"
+            token = f"{payload}~{sig}"
 
             self.send_json({'success': True, 'token': token, 'expires_in': 300})
 

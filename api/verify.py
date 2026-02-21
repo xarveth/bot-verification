@@ -11,9 +11,9 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'nexora-verify-secret-2024')
 
 def decode_token(token_str):
     """Decode and verify a signed token. Returns (user_id, shortener_link, time_left) or raises."""
-    if '.' not in token_str:
+    if '~' not in token_str:
         return None, None, None
-    payload_b64, sig = token_str.rsplit('.', 1)
+    payload_b64, sig = token_str.rsplit('~', 1)
 
     # Verify signature
     expected_sig = hmac.new(SECRET_KEY.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
