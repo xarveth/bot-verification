@@ -8,11 +8,19 @@
   ],
   "routes": [
     {
+      "src": "/pre-verify/([^/]+)/submit",
+      "dest": "/api/verify.py"
+    },
+    {
       "src": "/pre-verify/([^/]+)",
       "dest": "/api/verify.py"
     },
     {
-      "src": "/pre-verify/([^/]+)/submit",
+      "src": "/verify/([^/]+)/submit",
+      "dest": "/api/verify.py"
+    },
+    {
+      "src": "/verify/([^/]+)",
       "dest": "/api/verify.py"
     },
     {

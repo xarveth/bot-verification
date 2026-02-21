@@ -23,9 +23,10 @@ class handler(BaseHTTPRequestHandler):
         parsed = urlparse(path)
         path_parts = parsed.path.split('/')
         
-        # Extract token: /pre-verify/TOKEN
-        if len(path_parts) >= 3 and path_parts[1] == 'pre-verify':
+        # Extract token: /pre-verify/TOKEN or /verify/TOKEN
+        if len(path_parts) >= 3 and path_parts[1] in ('pre-verify', 'verify'):
             token = path_parts[2]
+            path_prefix = path_parts[1]  # 'pre-verify' or 'verify'
             query_params = parse_qs(parsed.query)
             user_id = query_params.get('uid', ['anonymous'])[0]
             
@@ -51,7 +52,7 @@ class handler(BaseHTTPRequestHandler):
                 return
             
             # Send verification page
-            self.send_verification_page(token, user_id, time_left)
+            self.send_verification_page(token, user_id, time_left, path_prefix)
         else:
             self.send_error_page("Invalid URL")
     
@@ -60,8 +61,8 @@ class handler(BaseHTTPRequestHandler):
         path = self.path
         path_parts = path.split('/')
         
-        # Extract token: /pre-verify/TOKEN/submit
-        if len(path_parts) >= 4 and path_parts[1] == 'pre-verify' and path_parts[3] == 'submit':
+        # Extract token: /pre-verify/TOKEN/submit or /verify/TOKEN/submit
+        if len(path_parts) >= 4 and path_parts[1] in ('pre-verify', 'verify') and path_parts[3] == 'submit':
             token = path_parts[2]
             
             # Read POST data
@@ -131,7 +132,7 @@ class handler(BaseHTTPRequestHandler):
                 'message': 'Invalid request'
             })
     
-    def send_verification_page(self, token, user_id, time_left):
+    def send_verification_page(self, token, user_id, time_left, path_prefix='pre-verify'):
         """Send verification HTML page"""
         self.send_response(200)
         self.send_header('Content-type', 'text/html')
@@ -341,6 +342,7 @@ class handler(BaseHTTPRequestHandler):
     <script>
         const TOKEN = '{token}';
         const USER_ID = '{user_id}';
+        const path_prefix = '{path_prefix}';
         const VERIFICATION_TIME = 10;
         let timeLeft = VERIFICATION_TIME;
         let selectedAnswer = null;
@@ -405,7 +407,7 @@ class handler(BaseHTTPRequestHandler):
             document.getElementById('verifyBtn').disabled = true;
             
             try {{
-                const response = await fetch(`/pre-verify/${{TOKEN}}/submit`, {{
+                const response = await fetch(`/${path_prefix}/${{TOKEN}}/submit`, {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
