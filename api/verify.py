@@ -1,19 +1,36 @@
 from http.server import BaseHTTPRequestHandler
-from pymongo import MongoClient
 import json
 import time
 import os
+import hmac
+import hashlib
+import base64
 from urllib.parse import urlparse, parse_qs
 
-# MongoDB connection
-DB_URI = os.getenv('DB_URI', '')
+SECRET_KEY = os.getenv('SECRET_KEY', 'nexora-verify-secret-2024')
 
-def get_db():
-    """Get MongoDB database"""
-    if not DB_URI:
-        return None
-    client = MongoClient(DB_URI)
-    return client['bot_database']
+def decode_token(token_str):
+    """Decode and verify a signed token. Returns (user_id, shortener_link, time_left) or raises."""
+    if '.' not in token_str:
+        return None, None, None
+    payload_b64, sig = token_str.rsplit('.', 1)
+
+    # Verify signature
+    expected_sig = hmac.new(SECRET_KEY.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return None, None, None
+
+    # Decode payload
+    padding = 4 - len(payload_b64) % 4
+    payload_str = base64.urlsafe_b64decode((payload_b64 + '=' * padding).encode()).decode()
+    data = json.loads(payload_str)
+
+    user_id = data['uid']
+    shortener_link = data['link']
+    timestamp = data['ts']
+
+    time_left = 300 - (int(time.time()) - timestamp)
+    return user_id, shortener_link, time_left
 
 class handler(BaseHTTPRequestHandler):
     
@@ -22,37 +39,26 @@ class handler(BaseHTTPRequestHandler):
         path = self.path
         parsed = urlparse(path)
         path_parts = parsed.path.split('/')
-        
+
         # Extract token: /pre-verify/TOKEN or /verify/TOKEN
         if len(path_parts) >= 3 and path_parts[1] in ('pre-verify', 'verify'):
             token = path_parts[2]
-            path_prefix = path_parts[1]  # 'pre-verify' or 'verify'
+            path_prefix = path_parts[1]
             query_params = parse_qs(parsed.query)
-            user_id = query_params.get('uid', ['anonymous'])[0]
-            
-            # Get token from database
-            db = get_db()
-            if not db:
-                self.send_error_page("Database connection error")
-                return
-            
-            token_data = db.verification_tokens.find_one({'token': token})
-            
-            if not token_data:
+            user_id_param = query_params.get('uid', ['anonymous'])[0]
+
+            # Decode + verify signed token (no DB needed)
+            user_id, shortener_link, time_left = decode_token(token)
+
+            if user_id is None:
                 self.send_error_page("Invalid or expired verification link")
                 return
-            
-            # Check expiry (5 minutes = 300 seconds)
-            current_time = int(time.time())
-            time_left = 300 - (current_time - token_data['created_at'])
-            
+
             if time_left <= 0:
-                db.verification_tokens.delete_one({'token': token})
                 self.send_error_page("Verification link has expired")
                 return
-            
-            # Send verification page
-            self.send_verification_page(token, user_id, time_left, path_prefix)
+
+            self.send_verification_page(token, user_id_param, time_left, path_prefix)
         else:
             self.send_error_page("Invalid URL")
     
@@ -60,77 +66,33 @@ class handler(BaseHTTPRequestHandler):
         """Handle verification submission"""
         path = self.path
         path_parts = path.split('/')
-        
+
         # Extract token: /pre-verify/TOKEN/submit or /verify/TOKEN/submit
         if len(path_parts) >= 4 and path_parts[1] in ('pre-verify', 'verify') and path_parts[3] == 'submit':
             token = path_parts[2]
-            
-            # Read POST data
+
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
             data = json.loads(post_data.decode('utf-8'))
-            
+
             user_id = data.get('user_id', 'anonymous')
             interaction_time = data.get('interaction_time', 0)
-            
-            # Validate interaction time (must wait 10 seconds)
+
             if interaction_time < 10:
-                self.send_json_response({
-                    'success': False,
-                    'message': 'Please wait for the full countdown'
-                })
+                self.send_json_response({'success': False, 'message': 'Please wait for the full countdown'})
                 return
-            
-            # Get token from database
-            db = get_db()
-            if not db:
-                self.send_json_response({
-                    'success': False,
-                    'message': 'Database connection error'
-                })
+
+            # Decode + verify signed token (no DB needed)
+            token_user_id, shortener_link, time_left = decode_token(token)
+
+            if token_user_id is None or time_left <= 0:
+                self.send_json_response({'success': False, 'message': 'Invalid or expired verification link'})
                 return
-            
-            token_data = db.verification_tokens.find_one({'token': token})
-            
-            if not token_data:
-                self.send_json_response({
-                    'success': False,
-                    'message': 'Invalid verification link'
-                })
-                return
-            
-            # Check if already verified
-            if token_data.get('verified', False):
-                self.send_json_response({
-                    'success': False,
-                    'message': 'Already verified'
-                })
-                return
-            
-            # Check user match
-            if token_data['user_id'] != user_id:
-                self.send_json_response({
-                    'success': False,
-                    'message': 'Invalid user'
-                })
-                return
-            
-            # Mark as verified
-            db.verification_tokens.update_one(
-                {'token': token},
-                {'$set': {'verified': True}}
-            )
-            
-            # Return shortener link
-            self.send_json_response({
-                'success': True,
-                'redirect_url': token_data['shortener_link']
-            })
+
+            # Return shortener link directly from token
+            self.send_json_response({'success': True, 'redirect_url': shortener_link})
         else:
-            self.send_json_response({
-                'success': False,
-                'message': 'Invalid request'
-            })
+            self.send_json_response({'success': False, 'message': 'Invalid request'})
     
     def send_verification_page(self, token, user_id, time_left, path_prefix='pre-verify'):
         """Send verification HTML page"""
