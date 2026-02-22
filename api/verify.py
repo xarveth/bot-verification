@@ -369,7 +369,7 @@ class handler(BaseHTTPRequestHandler):
             document.getElementById('verifyBtn').disabled = true;
             
             try {{
-                const response = await fetch(`/${path_prefix}/${{TOKEN}}/submit`, {{
+                const response = await fetch('/' + path_prefix + '/' + TOKEN + '/submit', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
