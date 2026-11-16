@@ -71,8 +71,35 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(sec.chrome_block_page(reason).encode())
         return False
 
-    # -- GET: verification page ---------------------------------------
+    # -- GET / POST wrappers: an unhandled exception must never turn
+    # into Vercel's HTML 500 page -- the browser's fetch() then fails
+    # to parse JSON and the user only sees "Network error". Return a
+    # readable JSON / error page instead (live bug, 2026-11-16).
     def do_GET(self):
+        try:
+            self._handle_get()
+        except Exception as exc:  # noqa: BLE001 - report, never crash
+            print(f"ERROR in do_GET: {exc}", file=sys.stderr)
+            try:
+                self.send_error_page(f"Server error ({exc}). Please refresh and try again.")
+            except Exception:
+                pass
+
+    def do_POST(self):
+        try:
+            self._handle_post()
+        except Exception as exc:  # noqa: BLE001 - report, never crash
+            print(f"ERROR in do_POST: {exc}", file=sys.stderr)
+            try:
+                self.send_json_response(
+                    {'success': False,
+                     'message': f'Server error ({exc}). Please refresh and try again.'},
+                    status=500)
+            except Exception:
+                pass
+
+    # -- GET: verification page ---------------------------------------
+    def _handle_get(self):
         """Handle verification page requests"""
         path = self.path
         parsed = urlparse(path)
@@ -144,7 +171,7 @@ class handler(BaseHTTPRequestHandler):
             self.send_error_page("Invalid URL")
 
     # -- POST: verification submission --------------------------------
-    def do_POST(self):
+    def _handle_post(self):
         """Handle verification submission"""
         path = self.path
         path_parts = path.split('/')
@@ -625,7 +652,19 @@ class handler(BaseHTTPRequestHandler):
                     }})
                 }});
 
-                const data = await response.json();
+                // Read as text first: if the server ever returns a
+                // non-JSON error page, show its status instead of a
+                // generic "Network error" (live bug, 2026-11-16).
+                const rawText = await response.text();
+                let data;
+                try {{
+                    data = JSON.parse(rawText);
+                }} catch (e) {{
+                    showError('Server error (HTTP ' + response.status + '). Please try again.');
+                    document.getElementById('loading').classList.remove('active');
+                    document.getElementById('verifyBtn').disabled = false;
+                    return;
+                }}
 
                 if (data.success) {{
                     document.getElementById('loading').innerHTML = '<div style="color: #4caf50; font-size: 24px; margin-bottom: 10px;">✓</div><p style="color: #4caf50; font-weight: 600;">Verification Successful!</p><p style="color: #666; font-size: 14px;">Redirecting to download link...</p>';
