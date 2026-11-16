@@ -278,27 +278,49 @@ class AntiBypassTests(unittest.TestCase):
 
     def test_valid_finish_token_releases_link(self):
         link, session, reason = sec.validate_finish_token(
-            self.token, "iphash1", CHROME_UA)
+            self.token, "iphash1", CHROME_UA,
+            self.session["session_id"])
         self.assertEqual(link, self.LINK)
         self.assertEqual(reason, "ok")
         self.assertEqual(session["session_id"], self.session["session_id"])
 
     def test_tampered_token_rejected(self):
         bad = self.token[:-3] + "AAA"
-        link, _, reason = sec.validate_finish_token(bad, "iphash1", CHROME_UA)
+        link, _, reason = sec.validate_finish_token(
+            bad, "iphash1", CHROME_UA, self.session["session_id"])
         self.assertIsNone(link)
         self.assertIn("bypass", reason)
 
     def test_reused_token_rejected(self):
         self.assertTrue(sec.consume_finish_token(self.token))
         link, _, reason = sec.validate_finish_token(
-            self.token, "iphash1", CHROME_UA)
+            self.token, "iphash1", CHROME_UA, self.session["session_id"])
         self.assertIsNone(link)
         self.assertIn("already-used", reason)
 
     def test_wrong_ip_rejected(self):
         link, _, reason = sec.validate_finish_token(
-            self.token, "other-ip", CHROME_UA)
+            self.token, "other-ip", CHROME_UA, self.session["session_id"])
+
+    def test_different_browser_session_rejected(self):
+        # Same IP, different browser / profile: the bv_session
+        # cookie does not match the finish token's session.
+        link, _, reason = sec.validate_finish_token(
+            self.token, "iphash1", CHROME_UA, "some-other-session")
+        self.assertIsNone(link)
+        self.assertIn("session-changed", reason)
+
+    def test_missing_session_cookie_rejected(self):
+        link, _, reason = sec.validate_finish_token(
+            self.token, "iphash1", CHROME_UA, None)
+        self.assertIsNone(link)
+        self.assertIn("session-cookie-missing", reason)
+
+    def test_different_user_agent_rejected(self):
+        link, _, reason = sec.validate_finish_token(
+            self.token, "iphash1", FIREFOX_UA, self.session["session_id"])
+        self.assertIsNone(link)
+        self.assertIn("browser-changed", reason)
         self.assertIsNone(link)
         self.assertIn("bypass", reason)
 
@@ -308,7 +330,8 @@ class AntiBypassTests(unittest.TestCase):
         token = sec.issue_finish_token(
             session["session_id"], sec.hash_token("tok-xyz"),
             self.LINK, "iphash1", CHROME_UA)
-        link, _, reason = sec.validate_finish_token(token, "iphash1", CHROME_UA)
+        link, _, reason = sec.validate_finish_token(
+            token, "iphash1", CHROME_UA, session["session_id"])
         self.assertIsNone(link)
         self.assertIn("not-verified", reason)
 
@@ -324,7 +347,8 @@ class AntiBypassTests(unittest.TestCase):
         sig = _hm.new(b"test-secret-for-tests-only", payload_b64.encode(),
                       _hl.sha256).hexdigest()
         link, _, reason = sec.validate_finish_token(
-            f"{payload_b64}~{sig}", "iphash1", CHROME_UA)
+            f"{payload_b64}~{sig}", "iphash1", CHROME_UA,
+            self.session["session_id"])
         self.assertIsNone(link)
         self.assertIn("expired", reason)
 

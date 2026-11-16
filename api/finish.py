@@ -80,7 +80,11 @@ class handler(BaseHTTPRequestHandler):
             return
         token = self._token()
         _ip, ip_hash, _ua, _chrome_ok = self._context()
-        link, _session, reason = sec.validate_finish_token(token, ip_hash, _ua)
+        # Same-session re-check: the bv_session cookie set when the
+        # maths captcha was done must be the finish token's session.
+        cookie_session = sec.parse_cookies(self.headers).get('bv_session')
+        link, _session, reason = sec.validate_finish_token(
+            token, ip_hash, _ua, cookie_session)
         if link is None:
             self._send(*_page("Verification required",
                               '<div class="err"><h1>🛡️ Verification required</h1>'
@@ -118,7 +122,9 @@ class handler(BaseHTTPRequestHandler):
             return
         token = self._token()
         _ip, ip_hash, _ua, _chrome_ok = self._context()
-        link, _session, reason = sec.validate_finish_token(token, ip_hash, _ua)
+        cookie_session = sec.parse_cookies(self.headers).get('bv_session')
+        link, _session, reason = sec.validate_finish_token(
+            token, ip_hash, _ua, cookie_session)
         if link is None:
             self._send(*_page("Verification required",
                               '<div class="err"><h1>🛡️ Verification required</h1>'

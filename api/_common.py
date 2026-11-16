@@ -513,14 +513,24 @@ def _decode_finish_token(token):
     return payload, "ok"
 
 
-def validate_finish_token(token, ip_hash, user_agent):
+def validate_finish_token(token, ip_hash, user_agent,
+                          cookie_session_id=None):
     """Full anti-bypass re-check for /finish.
     Returns (shortener_link, session, reason). On failure link is None
-    and reason names the check that failed, e.g. 'bypass: ...'."""
+    and reason names the check that failed, e.g. 'bypass: ...'.
+    The browser session must be the SAME one that did the maths
+    captcha: the bv_session cookie set on the verify page must match
+    the finish token's session, and the User-Agent must match the
+    session's stored one. A finish link opened in a different
+    browser / profile / device (even from the same IP) is refused."""
     payload, reason = _decode_finish_token(token)
     if payload is None:
         return None, None, f"bypass:{reason}"
     session_id = payload.get("sid")
+    if not cookie_session_id:
+        return None, None, "bypass:session-cookie-missing"
+    if cookie_session_id != session_id:
+        return None, None, "bypass:session-changed"
     db = get_db()
     if db is not None:
         # One-time use: a finish token that was already redeemed is dead.
@@ -533,6 +543,9 @@ def validate_finish_token(token, ip_hash, user_agent):
                 return None, None, "bypass:finish-token-already-used"
             if rec.get("ip_hash") and ip_hash and rec["ip_hash"] != ip_hash:
                 return None, None, "bypass:ip-changed"
+            if rec.get("user_agent") and user_agent and \
+                    rec["user_agent"] != (user_agent or "")[:512]:
+                return None, None, "bypass:browser-changed"
         except Exception:
             pass  # DB hiccup: fall through to the signed-token checks
         session = get_session(session_id)
@@ -542,6 +555,9 @@ def validate_finish_token(token, ip_hash, user_agent):
             return None, None, "bypass:session-not-verified"
         if session.get("ip_hash") and ip_hash and session["ip_hash"] != ip_hash:
             return None, None, "bypass:ip-changed"
+        if session.get("user_agent") and user_agent and \
+                session["user_agent"] != (user_agent or "")[:512]:
+            return None, None, "bypass:browser-changed"
     else:
         # No Mongo: the signed token is the only proof, and it can
         # only exist if verification succeeded and issued it.

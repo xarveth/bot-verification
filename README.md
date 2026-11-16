@@ -118,7 +118,7 @@ Validates user verification and returns a one-time finish URL (not the shortener
 GET /finish?t=<token>   -> "Continue securely" page
 POST /finish?t=<token>  -> 302 redirect to the shortener link
 ```
-The verify token is only base64, so anyone could decode it and read the shortener link without verifying. The link is therefore never returned by submit: instead the browser gets a one-time finish token whose link is encrypted server-side. `/finish` re-checks it before releasing the link — token signature + 5-minute expiry, one-time use, the session that earned it must have status `verified`, and the IP / browser must match that session. A tampered, reused, expired, or skipped-verification finish link gets a "Verification required" error instead of the link.
+The verify token is only base64, so anyone could decode it and read the shortener link without verifying. The link is therefore never returned by submit: instead the browser gets a one-time finish token whose link is encrypted server-side. `/finish` re-checks it before releasing the link — token signature + 5-minute expiry, one-time use, the session that earned it must have status `verified`, and the IP / browser must match that session. It also re-checks that the browser session is the SAME one that did the maths captcha: the `bv_session` cookie set on the verify page must match the finish token's session, and the User-Agent must match the session's stored one — opening the finish link in a different browser, profile or device (even from the same IP) is refused. A tampered, reused, expired, or skipped-verification finish link gets a "Verification required" error instead of the link.
 
 ### 4. Create Token (For Bot)
 ```
