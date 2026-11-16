@@ -190,6 +190,21 @@ class SessionTrackingTests(unittest.TestCase):
         limited, _, _ = sec.check_rate_limit("other-ip")
         self.assertFalse(limited)
 
+    def test_get_session_with_naive_mongo_datetimes(self):
+        # MongoDB strips tzinfo on read, so expires_at/created_at
+        # come back offset-naive while now() is offset-aware.
+        # Comparing them used to raise TypeError and crash every
+        # submit on the live site (2026-11-16).
+        session = sec.create_session("123", "t", "ip", CHROME_UA, True, "131")
+        stored = self.fake_db["verification_sessions"].docs[0]
+        for key in ("expires_at", "created_at"):
+            stored[key] = stored[key].replace(tzinfo=None)
+        got = sec.get_session(session["session_id"])
+        self.assertIsNotNone(got)
+        self.assertIsNotNone(got["expires_at"].tzinfo)
+        elapsed = (sec.now() - sec.as_aware(got["created_at"])).total_seconds()
+        self.assertGreaterEqual(elapsed, 0)
+
     def test_update_session_and_attempts(self):
         session = sec.create_session("123", "t", "ip", CHROME_UA, True, "131")
         sec.update_session(session["session_id"], {"status": "verified"},

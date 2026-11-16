@@ -252,9 +252,9 @@ class handler(BaseHTTPRequestHandler):
             #    page view and the submit, measured on the server.
             #    The client-reported interaction_time alone is not trusted.
             if session is not None and session.get('page_viewed_at'):
-                elapsed = (sec.now() - session['page_viewed_at']).total_seconds()
+                elapsed = (sec.now() - sec.as_aware(session['page_viewed_at'])).total_seconds()
             elif session is not None and session.get('created_at'):
-                elapsed = (sec.now() - session['created_at']).total_seconds()
+                elapsed = (sec.now() - sec.as_aware(session['created_at'])).total_seconds()
             else:
                 elapsed = interaction_time
             if elapsed < 10 or interaction_time < 10:

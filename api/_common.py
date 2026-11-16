@@ -73,6 +73,20 @@ def now():
     return datetime.now(timezone.utc)
 
 
+def as_aware(dt):
+    """MongoDB returns datetimes as offset-naive UTC; now() is
+    offset-aware. Comparing the two raises
+    "TypeError: can't compare offset-naive and offset-aware
+    datetimes" -- which crashed every submit on the live site
+    (2026-11-16). Normalise any datetime read back from Mongo
+    through this before comparing or subtracting."""
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def get_secret_key():
     """Return SECRET_KEY, or None if it was never configured."""
     return SECRET_KEY or os.getenv("SECRET_KEY") or None
@@ -275,6 +289,12 @@ def get_session(session_id):
         return None
     if not doc:
         return None
+    # Mongo returns naive datetimes; normalise them so every later
+    # comparison/subtraction against now() works (see as_aware).
+    for _key in ("expires_at", "created_at", "last_seen_at",
+                 "page_viewed_at", "verified_at", "turnstile_checked_at"):
+        if doc.get(_key) is not None:
+            doc[_key] = as_aware(doc[_key])
     if doc.get("expires_at") and doc["expires_at"] < now():
         return None
     return doc
