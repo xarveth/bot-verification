@@ -85,9 +85,24 @@ class FakeDB(dict):
 
 class ChromeGateTests(unittest.TestCase):
     def test_real_chrome_passes(self):
-        ok, version, _ = sec.is_chrome(CHROME_UA)
+        ok, version, _ = sec.is_chrome(
+            CHROME_UA, '"Google Chrome";v="131", "Chromium";v="131"')
         self.assertTrue(ok)
         self.assertEqual(version, "131")
+
+    def test_missing_sec_ch_ua_blocked(self):
+        # Real Chrome always sends Sec-CH-UA; Brave can hide behind a
+        # Chrome-looking UA when that header is missing, so a missing
+        # header must not pass (live Brave test, 2026-11-16).
+        ok, _, reason = sec.is_chrome(CHROME_UA)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "sec-ch-ua-missing")
+
+    def test_brave_brands_blocked(self):
+        ok, _, reason = sec.is_chrome(
+            CHROME_UA,
+            '"Brave";v="131", "Chromium";v="131", "Not-A.Brand";v="24"')
+        self.assertFalse(ok)
 
     def test_edge_firefox_safari_blocked(self):
         for ua in (EDGE_UA, FIREFOX_UA, SAFARI_UA, "", None):

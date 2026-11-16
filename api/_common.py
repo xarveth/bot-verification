@@ -133,13 +133,21 @@ def is_chrome(user_agent, sec_ch_ua=""):
     if not match:
         return False, None, "not-chrome"
     version = match.group(1)
-    if sec_ch_ua:
-        # Chrome advertises '"Google Chrome"'; Chromium-only builds
-        # and Edge advertise Chromium / Microsoft Edge instead.
-        if '"Google Chrome"' not in sec_ch_ua and '"Chromium"' not in sec_ch_ua:
-            return False, version, "sec-ch-ua-not-chrome"
-        if '"Google Chrome"' not in sec_ch_ua:
-            return False, version, "chromium-not-chrome"
+    # Brave's User-Agent has no "Brave" token -- it just says Chrome --
+    # so the server can only tell it apart from Sec-CH-UA. If that
+    # header is missing, do NOT let the request through: real Chrome
+    # always sends Sec-CH-UA (low-entropy brands) by default, so a
+    # missing header means the browser is hiding its identity, and
+    # letting it through is exactly how Brave was loading the page
+    # and only failing later at submit (2026-11-16 live test).
+    if not sec_ch_ua:
+        return False, version, "sec-ch-ua-missing"
+    if '"Brave"' in sec_ch_ua:
+        return False, version, "non-chrome-browser:Brave"
+    # Chrome advertises '"Google Chrome"'; Chromium-only builds,
+    # Brave and Edge advertise Chromium / their own brand instead.
+    if '"Google Chrome"' not in sec_ch_ua:
+        return False, version, "sec-ch-ua-not-chrome"
     return True, version, "ok"
 
 
@@ -480,3 +488,24 @@ def parse_cookies(headers):
 def session_cookie_header(session_id):
     return (f"bv_session={session_id}; HttpOnly; Secure; SameSite=Lax; "
             f"Path=/; Max-Age={SESSION_TTL_SECONDS}")
+
+
+# ---------------------------------------------------------------- Vercel entrypoint
+# vercel.json builds "api/**/*.py" with @vercel/python, so every .py
+# file under api/ is treated as a serverless function and must expose
+# a top-level "handler". This file is a shared module, not a real
+# endpoint, but without a handler the whole deployment fails with
+# "Could not find a top-level 'app', 'application', or 'handler' in
+# 'api/_common.py'". This dummy handler only ever answers 404; no
+# route in vercel.json points at this file.
+from http.server import BaseHTTPRequestHandler  # noqa: E402
+
+
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self):
+        self.send_response(404)
+        self.end_headers()
