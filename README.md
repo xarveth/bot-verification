@@ -94,7 +94,7 @@ Displays verification page with countdown and challenge.
 ```
 POST /pre-verify/{token}/submit
 ```
-Validates user verification and returns shortener link.
+Validates user verification and returns a one-time finish URL (not the shortener link itself — see step 4).
 
 **Request Body:**
 ```json
@@ -109,9 +109,16 @@ Validates user verification and returns shortener link.
 ```json
 {
   "success": true,
-  "redirect_url": "https://shortener.link/abc123"
+  "redirect_url": "/finish?t=<one-time-finish-token>"
 }
 ```
+
+### 4. Finish — anti-bypass re-check (like freeshare's /finish)
+```
+GET /finish?t=<token>   -> "Continue securely" page
+POST /finish?t=<token>  -> 302 redirect to the shortener link
+```
+The verify token is only base64, so anyone could decode it and read the shortener link without verifying. The link is therefore never returned by submit: instead the browser gets a one-time finish token whose link is encrypted server-side. `/finish` re-checks it before releasing the link — token signature + 5-minute expiry, one-time use, the session that earned it must have status `verified`, and the IP / browser must match that session. A tampered, reused, expired, or skipped-verification finish link gets a "Verification required" error instead of the link.
 
 ### 4. Create Token (For Bot)
 ```

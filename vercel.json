@@ -32,6 +32,10 @@
       "dest": "/api/sessions.py"
     },
     {
+      "src": "/finish",
+      "dest": "/api/finish.py"
+    },
+    {
       "src": "/(.*)",
       "dest": "/api/index.py"
     }

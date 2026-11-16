@@ -311,8 +311,20 @@ class handler(BaseHTTPRequestHandler):
                     'interaction_time': int(interaction_time),
                 }, event='verified')
 
-            # Return shortener link directly from token
-            self.send_json_response({'success': True, 'redirect_url': shortener_link})
+            # 8) Anti-bypass: do NOT return the shortener link itself.
+            #    The verify token is only base64, so anyone could decode
+            #    it and skip verification entirely. Issue a one-time
+            #    finish token instead; /finish re-checks the verified
+            #    session, IP and browser before releasing the link.
+            finish_token = sec.issue_finish_token(
+                session_id, sec.hash_token(token), shortener_link,
+                ip_hash, ua)
+            if not finish_token:
+                _fail('Server is not configured (SECRET_KEY missing).')
+                return
+            self.send_json_response(
+                {'success': True,
+                 'redirect_url': f'/finish?t={finish_token}'})
         else:
             self.send_json_response({'success': False, 'message': 'Invalid request'})
 
@@ -667,7 +679,7 @@ class handler(BaseHTTPRequestHandler):
                 }}
 
                 if (data.success) {{
-                    document.getElementById('loading').innerHTML = '<div style="color: #4caf50; font-size: 24px; margin-bottom: 10px;">✓</div><p style="color: #4caf50; font-weight: 600;">Verification Successful!</p><p style="color: #666; font-size: 14px;">Redirecting to download link...</p>';
+                    document.getElementById('loading').innerHTML = '<div style="color: #4caf50; font-size: 24px; margin-bottom: 10px;">✓</div><p style="color: #4caf50; font-weight: 600;">Verification Successful!</p><p style="color: #666; font-size: 14px;">Checking your session, please continue...</p>';
                     setTimeout(() => window.location.href = data.redirect_url, 1000);
                 }} else {{
                     showError(data.message || 'Verification failed');

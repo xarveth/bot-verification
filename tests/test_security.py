@@ -54,8 +54,8 @@ class FakeCollection:
                 if "$push" in update:
                     for k, v in update["$push"].items():
                         doc.setdefault(k, []).append(v)
-                return mock.Mock(matched_count=1)
-        return mock.Mock(matched_count=0)
+                return mock.Mock(matched_count=1, modified_count=1)
+        return mock.Mock(matched_count=0, modified_count=0)
 
     def count_documents(self, query):
         # Only the created_at $gte shape used by check_rate_limit.
@@ -249,6 +249,84 @@ class TurnstileTests(unittest.TestCase):
             ok, detail = sec.verify_turnstile("tok")
             self.assertFalse(ok)
             self.assertIn("invalid-input-response", detail)
+
+
+class AntiBypassTests(unittest.TestCase):
+    """The /finish stage: the shortener link must only be released
+    after a second server-side re-check, never from the verify token
+    itself (its payload is only base64 and anyone could decode it)."""
+    LINK = "https://example.com/secret-download"
+
+    def setUp(self):
+        self.fake_db = FakeDB()
+        self._patch = mock.patch.object(sec, "get_db", return_value=self.fake_db)
+        self._patch.start()
+        self.session = sec.create_session("123", "tok-abc", "iphash1",
+                                          CHROME_UA, True, "131")
+        sec.update_session(self.session["session_id"], {"status": "verified"})
+        self.token = sec.issue_finish_token(
+            self.session["session_id"], sec.hash_token("tok-abc"),
+            self.LINK, "iphash1", CHROME_UA)
+
+    def tearDown(self):
+        self._patch.stop()
+
+    def test_link_not_in_plaintext_in_finish_token(self):
+        self.assertNotIn("example.com", self.token)
+        self.assertNotIn("secret-download", self.token)
+        self.assertNotIn(self.LINK, self.token)
+
+    def test_valid_finish_token_releases_link(self):
+        link, session, reason = sec.validate_finish_token(
+            self.token, "iphash1", CHROME_UA)
+        self.assertEqual(link, self.LINK)
+        self.assertEqual(reason, "ok")
+        self.assertEqual(session["session_id"], self.session["session_id"])
+
+    def test_tampered_token_rejected(self):
+        bad = self.token[:-3] + "AAA"
+        link, _, reason = sec.validate_finish_token(bad, "iphash1", CHROME_UA)
+        self.assertIsNone(link)
+        self.assertIn("bypass", reason)
+
+    def test_reused_token_rejected(self):
+        self.assertTrue(sec.consume_finish_token(self.token))
+        link, _, reason = sec.validate_finish_token(
+            self.token, "iphash1", CHROME_UA)
+        self.assertIsNone(link)
+        self.assertIn("already-used", reason)
+
+    def test_wrong_ip_rejected(self):
+        link, _, reason = sec.validate_finish_token(
+            self.token, "other-ip", CHROME_UA)
+        self.assertIsNone(link)
+        self.assertIn("bypass", reason)
+
+    def test_unverified_session_rejected(self):
+        session = sec.create_session("999", "tok-xyz", "iphash1",
+                                     CHROME_UA, True, "131")
+        token = sec.issue_finish_token(
+            session["session_id"], sec.hash_token("tok-xyz"),
+            self.LINK, "iphash1", CHROME_UA)
+        link, _, reason = sec.validate_finish_token(token, "iphash1", CHROME_UA)
+        self.assertIsNone(link)
+        self.assertIn("not-verified", reason)
+
+    def test_expired_token_rejected(self):
+        import base64 as _b64, hashlib as _hl, hmac as _hm, time as _t
+        encrypted = sec._finish_crypt(self.LINK.encode(), self.session["session_id"])
+        payload = {"sid": self.session["session_id"],
+                   "th": sec.hash_token("tok-abc"),
+                   "link": _b64.urlsafe_b64encode(encrypted).decode().rstrip("="),
+                   "ts": int(_t.time()) - 400}
+        payload_b64 = _b64.urlsafe_b64encode(
+            json.dumps(payload).encode()).decode().rstrip("=")
+        sig = _hm.new(b"test-secret-for-tests-only", payload_b64.encode(),
+                      _hl.sha256).hexdigest()
+        link, _, reason = sec.validate_finish_token(
+            f"{payload_b64}~{sig}", "iphash1", CHROME_UA)
+        self.assertIsNone(link)
+        self.assertIn("expired", reason)
 
 
 class MiscTests(unittest.TestCase):

@@ -401,6 +401,187 @@ def record_token_created(token, user_id, shortener_link, expires_at):
         return False
 
 
+# ---------------------------------------------------------------- Anti-bypass finish stage
+# The original verify token is only base64 -- anyone who gets the
+# verify link can decode it and read the shortener link without
+# doing the countdown / math / Turnstile at all. That is the
+# "bypass in the middle" freeshare guards against with its /finish
+# page. So a successful verification no longer returns the link:
+# it returns a one-time finish token, and the link is only released
+# by /finish after a second, server-side re-check:
+#   * finish token signature + expiry (5 min) valid
+#   * finish token not used before (one-time, Mongo when available)
+#   * the session that earned it exists and has status "verified"
+#   * same IP hash and same Chrome browser as that session
+# The link itself is never in the finish token in plaintext: it is
+# encrypted with a keystream derived from SECRET_KEY (stdlib-only
+# XOR stream cipher, HMAC-signed), so only the server can read it
+# back. Mongo also stores the finish record for one-time enforcement.
+
+FINISH_TTL_SECONDS = 300
+
+
+def _finish_keystream(key_material, length):
+    """HMAC-SHA256 keystream (counter mode) for _finish_crypt."""
+    out = bytearray()
+    counter = 0
+    while len(out) < length:
+        out.extend(hmac.new(
+            key_material,
+            f"finish-crypt:{counter}".encode(), hashlib.sha256).digest())
+        counter += 1
+    return bytes(out[:length])
+
+
+def _finish_crypt(data, session_id):
+    """XOR-encrypt/decrypt bytes with a SECRET_KEY-derived keystream.
+    Symmetric: crypt(crypt(x)) == x. Not a substitute for real AEAD,
+    but the link is never plaintext on the wire and only the server
+    (which holds SECRET_KEY) can recover it."""
+    secret = get_secret_key()
+    if not secret:
+        return None
+    key = hmac.new(secret.encode(), f"finish:{session_id}".encode(),
+                   hashlib.sha256).digest()
+    stream = _finish_keystream(key, len(data))
+    return bytes(a ^ b for a, b in zip(data, stream))
+
+
+def issue_finish_token(session_id, token_hash, shortener_link, ip_hash,
+                       user_agent):
+    """Create a one-time finish token after a successful verification.
+    Returns the token string, or None if SECRET_KEY is missing."""
+    if not session_id or not shortener_link:
+        return None
+    secret = get_secret_key()
+    if not secret:
+        return None
+    encrypted = _finish_crypt(shortener_link.encode(), session_id)
+    if encrypted is None:
+        return None
+    payload = {
+        "sid": session_id,
+        "th": token_hash,
+        "link": base64.urlsafe_b64encode(encrypted).decode().rstrip("="),
+        "ts": int(time.time()),
+    }
+    payload_b64 = base64.urlsafe_b64encode(
+        json.dumps(payload).encode()).decode().rstrip("=")
+    sig = hmac.new(secret.encode(), payload_b64.encode(),
+                   hashlib.sha256).hexdigest()
+    token = f"{payload_b64}~{sig}"
+    db = get_db()
+    if db is not None:
+        try:
+            db["finish_tokens"].insert_one({
+                "finish_token_hash": hash_token(token),
+                "session_id": session_id,
+                "token_hash": token_hash,
+                "ip_hash": ip_hash,
+                "user_agent": (user_agent or "")[:512],
+                "created_at": now(),
+                "expires_at": now() + timedelta(seconds=FINISH_TTL_SECONDS),
+                "used": False,
+                "used_at": None,
+            })
+        except Exception as exc:
+            print(f"WARNING: could not store finish token: {exc}",
+                  file=sys.stderr)
+    return token
+
+
+def _decode_finish_token(token):
+    """(payload_dict, reason) -- signature + expiry only, no DB."""
+    if not token or "~" not in token:
+        return None, "missing-finish-token"
+    secret = get_secret_key()
+    if not secret:
+        return None, "server-secret-not-configured"
+    payload_b64, sig = token.rsplit("~", 1)
+    expected = hmac.new(secret.encode(), payload_b64.encode(),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None, "finish-signature-invalid"
+    try:
+        padding = (4 - len(payload_b64) % 4) % 4
+        payload = json.loads(base64.urlsafe_b64decode(
+            (payload_b64 + "=" * padding).encode()).decode())
+    except Exception:
+        return None, "finish-token-malformed"
+    if int(time.time()) - int(payload.get("ts", 0)) > FINISH_TTL_SECONDS:
+        return None, "finish-token-expired"
+    return payload, "ok"
+
+
+def validate_finish_token(token, ip_hash, user_agent):
+    """Full anti-bypass re-check for /finish.
+    Returns (shortener_link, session, reason). On failure link is None
+    and reason names the check that failed, e.g. 'bypass: ...'."""
+    payload, reason = _decode_finish_token(token)
+    if payload is None:
+        return None, None, f"bypass:{reason}"
+    session_id = payload.get("sid")
+    db = get_db()
+    if db is not None:
+        # One-time use: a finish token that was already redeemed is dead.
+        try:
+            rec = db["finish_tokens"].find_one(
+                {"finish_token_hash": hash_token(token)})
+            if rec is None:
+                return None, None, "bypass:finish-token-unknown"
+            if rec.get("used"):
+                return None, None, "bypass:finish-token-already-used"
+            if rec.get("ip_hash") and ip_hash and rec["ip_hash"] != ip_hash:
+                return None, None, "bypass:ip-changed"
+        except Exception:
+            pass  # DB hiccup: fall through to the signed-token checks
+        session = get_session(session_id)
+        if session is None:
+            return None, None, "bypass:session-not-found"
+        if session.get("status") != "verified":
+            return None, None, "bypass:session-not-verified"
+        if session.get("ip_hash") and ip_hash and session["ip_hash"] != ip_hash:
+            return None, None, "bypass:ip-changed"
+    else:
+        # No Mongo: the signed token is the only proof, and it can
+        # only exist if verification succeeded and issued it.
+        session = None
+    encrypted_b64 = payload.get("link") or ""
+    try:
+        padding = (4 - len(encrypted_b64) % 4) % 4
+        encrypted = base64.urlsafe_b64decode(
+            (encrypted_b64 + "=" * padding).encode())
+    except Exception:
+        return None, None, "bypass:finish-token-malformed"
+    decrypted = _finish_crypt(encrypted, session_id)
+    if decrypted is None:
+        return None, None, "bypass:server-secret-not-configured"
+    try:
+        link = decrypted.decode()
+    except Exception:
+        return None, None, "bypass:finish-token-malformed"
+    if not link.startswith(("http://", "https://")):
+        return None, None, "bypass:finish-token-malformed"
+    return link, session, "ok"
+
+
+def consume_finish_token(token):
+    """Mark a finish token used (one-time). Returns True if recorded."""
+    db = get_db()
+    if db is None:
+        return False
+    try:
+        res = db["finish_tokens"].update_one(
+            {"finish_token_hash": hash_token(token), "used": False},
+            {"$set": {"used": True, "used_at": now()}})
+        modified = getattr(res, "modified_count", None)
+        if isinstance(modified, int):
+            return modified > 0
+        return getattr(res, "matched_count", 0) > 0
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------- Turnstile
 
 def verify_turnstile(token, remote_ip=""):
