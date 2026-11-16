@@ -28,6 +28,10 @@
       "dest": "/api/create_token.py"
     },
     {
+      "src": "/api/sessions",
+      "dest": "/api/sessions.py"
+    },
+    {
       "src": "/(.*)",
       "dest": "/api/index.py"
     }
